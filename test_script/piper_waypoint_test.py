@@ -16,11 +16,15 @@ from pathlib import Path
 from pyAgxArm import create_agx_arm_config, AgxArmFactory
 
 WAYPOINTS_FILE = Path.cwd() / "waypoints.json"
+"""
 ROBOT_CFG = create_agx_arm_config(
-    robot="nero", comm="can", channel="can0", interface="socketcan"
+    robot="piper", comm="can", channel="can_right", interface="socketcan"
 )
-SPEED_PERCENT = 50
-MOTION_TIMEOUT_S = 30.0
+"""
+
+
+SPEED_PERCENT = 30
+MOTION_TIMEOUT_S = 5.0
 MOTION_POLL_S = 0.1
 
 # 等待机械臂运动完成，检查 motion_status == 0
@@ -30,15 +34,20 @@ def wait_motion_done(robot, timeout=MOTION_TIMEOUT_S, poll=MOTION_POLL_S):
         status = robot.get_arm_status()
         if status is not None and getattr(status.msg, "motion_status", None) == 0:
             return True
+        
+        # timeout check
+        
         if time.monotonic() - start > timeout:
-            return False
+            return True
         time.sleep(poll)
 
 
 def wait_enabled(robot, poll=0.1):
-    while not robot.enable():
+
+    while not robot.enable(255):
         time.sleep(poll)
         print("waiting... enable robot")
+    print(f"Robot enabled {robot.enable()}")
 
 # 记录目标和初始位置的关节角度，保存到 waypoints.json 文件中
 def record(robot):
@@ -46,11 +55,23 @@ def record(robot):
     # must stay disabled so the user can move it by hand.
     robot.disable()
     time.sleep(0.3)
+    
 
     print("Move the arm to the TARGET position, then press Enter to capture.")
-    input()
-    target = list(robot.get_joint_angles().msg)
-    print(f"  target = {target}")
+    
+    # input()
+    # targets = list(robot.get_joint_angles().msg)
+    # print(f"  target = {targets}")
+    
+    targets = []
+    for i in range(3):
+    
+        # print(f"pos{i}{robot.get_joint_angles()}")
+        # time.sleep(0.5)
+        input()
+        target = list(robot.get_joint_angles().msg)
+        print(f"  target = {target}")
+        targets.append(target)
 
     print("Move the arm to the HOME position, then press Enter to capture.")
     input()
@@ -58,35 +79,34 @@ def record(robot):
     print(f"  home   = {home}")
 
     WAYPOINTS_FILE.write_text(
-        json.dumps({"target": target, "home": home}, indent=2)
+        json.dumps({"target": targets, "home": home}, indent=2)
     )
     print(f"Saved to {WAYPOINTS_FILE}")
+
+DATA = json.loads(WAYPOINTS_FILE.read_text())
+HOME = DATA["home"]
 
 # 执行记录的目标和初始位置，先移动到目标位置，等待用户确认后再移动回初始位置
 def execute(robot):
     data = json.loads(WAYPOINTS_FILE.read_text())
     target, home = data["target"], data["home"]
-
-    robot.set_normal_mode()
+    
+    #robot.set_normal_mode()
     wait_enabled(robot)
     time.sleep(0.5)
     robot.set_speed_percent(SPEED_PERCENT)
 
-    print(f"Moving to TARGET: {target}")
-    robot.move_j(target)
-    if not wait_motion_done(robot):
-        print("WARNING: motion to TARGET timed out")
+        
+    while True:
+        print("Press Enter to continue to next target (Ctrl+C to abort).")
+        
+        for t in target:
+            
+            print(f"Moving to TARGET: {t}")
+            robot.move_j(t)
 
-    print("Press Enter to continue to HOME (Ctrl+C to abort).")
-    input()
-
-    print(f"Moving to HOME: {home}")
-    robot.move_j(home)
-    if not wait_motion_done(robot):
-        print("WARNING: motion to HOME timed out")
-
-    print("Reached HOME. Press Enter to finish.")
-    input()
+            time.sleep(3)
+        
 
 
 def show():
@@ -104,6 +124,7 @@ def parse_args():
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--record", action="store_true", help="Record target and home joint angles.")
     group.add_argument("--execute", action="store_true", help="Execute the recorded waypoints.")
+    parser.add_argument("--can", default="can0", help="CAN interface to use.")
     group.add_argument("--show", action="store_true", help="Print the currently recorded waypoints.")
     return parser.parse_args()
 
@@ -123,8 +144,12 @@ def main():
         sys.exit(1)
 
     try:
+        ROBOT_CFG = create_agx_arm_config(robot="piper", comm="can", channel=args.can, interface="socketcan")
         robot = AgxArmFactory.create_arm(ROBOT_CFG)
         robot.connect()
+        #robot.set_normal_mode()
+        wait_enabled(robot)
+        print(robot.is_connected())
     except Exception as e:
         print(f"Failed to connect to robot: {e}")
         sys.exit(1)
@@ -138,7 +163,16 @@ def main():
         print("\nCtrl+C received.")
     finally:
         try:
-            robot.disable()
+            
+            robot.move_j(HOME)
+            time.sleep(3)
+            
+            print("Disabling robot...")
+            robot.electronic_emergency_stop()
+            print("Electronic emergency stop activated.")
+            input()
+            robot.reset()
+            
         except Exception:
             pass
         time.sleep(0.3)
